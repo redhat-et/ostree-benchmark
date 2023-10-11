@@ -1,0 +1,14 @@
+name = "test-ostree"
+description = "test-ostree"
+version = "0.0.1"
+modules = []
+groups = []
+distro = ""
+
+[customizations]
+
+[[customizations.user]]
+name = "redhat"
+description = "redhat user"
+password = "$6$oUF8dYqqkTRYEl4n$FsCvivruxcgg.bF2kyt4dC/OmGNTQLOORV0.0PvShodRtF.KffrdPv2Y.t2Rmr25TpwSalTnVK.Cqx38yNLuU1"
+groups = ["users", "wheel"]

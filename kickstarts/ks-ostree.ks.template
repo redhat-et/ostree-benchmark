@@ -1,0 +1,23 @@
+lang en_US.UTF-8
+keyboard us
+timezone UTC
+text
+reboot
+
+# Configure network to use DHCP and activate on boot
+network --bootproto=dhcp --device=link --activate --onboot=on
+
+bootloader --timeout=1 --location=mbr --append="net.ifnames=0 biosdevname=0"
+text
+skipx
+zerombr
+clearpart --all --initlabel
+autopart --type=lvm
+reboot --eject
+
+rootpw redhat
+
+# Configure ostree
+#ostreesetup --nogpg --osname=rhel --remote=edge --url=http://192.168.122.1:8080/repo --ref=rhel/9/ARCH/edge
+#ostreecontainer
+ 
