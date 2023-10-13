@@ -1,6 +1,7 @@
 #!/bin/bash
-
 #set -ex
+
+QUAY_USER="oglok"
 
 function usage() {
     echo "Usage: $0 <experiment_number>"
@@ -59,6 +60,16 @@ function expose_ostree_container() {
     curl http://localhost:8080/repo/refs/heads/rhel/9/x86_64/edge > artifacts/commit_id
 }
 
+
+function create_ostree_container() {
+    echo "🕛 Extracting the ostree container"
+    echo "🕛 Login into quay.io"
+    sudo podman login quay.io
+    OSTREE_CONTAINER_PATH=$(sudo podman inspect test-ostree-base-container | grep -i "overlay" | grep merged | awk '{print $2}' | cut -d\" -f2)
+    sudo rpm-ostree compose container-encapsulate --repo="$OSTREE_CONTAINER_PATH/usr/share/nginx/html/repo/" rhel/9/x86_64/edge docker://quay.io/$QUAY_USER/rhel9.2-base:latest
+
+}
+
 function init() {
     echo "🕛 Running init experiment"
     sudo dnf install -y composer-cli osbuild-composer cockpit-composer
@@ -66,7 +77,7 @@ function init() {
 }
 
 function experiment_1() {
-    echo "🕛 Running experiment 1"
+    echo "🕛 Running experiment 1: Deploying a remote OSTree"
     create_base_ostree
     expose_ostree_container
 
@@ -102,12 +113,85 @@ function experiment_1() {
     exit 0
 }
 
+function experiment_6() {
+    echo "🕛 Running experiment 6: Deploying a OSTree Native Container"
+
+    #Ask if you want to create the ostree container
+    read -p "Do you want to create the ostree container? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        create_ostree_container
+    fi
+
+    if [ ! -f "kickstarts/ks-ostree-container.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree-container.ks
+        sed -e "s/#ostreecontainer/ostreecontainer/g" -i kickstarts/ks-ostree-container.ks
+        sed -e "s/QUAY_USER/$QUAY_USER/g" -i kickstarts/ks-ostree-container.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-container-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-container-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree-container.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree-container.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-container-vm | grep default | awk '{print $1}')
+
+    # if artifacts/traffic.txt exists, remove it
+    if [ -f "artifacts/traffic_container.csv" ]; then
+        rm artifacts/traffic_container.csv
+    fi
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container.csv &
+
+    exit 0
+}
+
+function cleanup() {
+    # Clean up all VMs
+    sudo virsh destroy test-ostree-base-vm
+    sudo virsh undefine test-ostree-base-vm
+    sudo virsh destroy test-ostree-container-vm
+    sudo virsh undefine test-ostree-container-vm
+
+    # Clean up all containers
+    sudo podman rm -f test-ostree-base-container
+
+    # Clean up artifacts
+    sudo rm -rf artifacts
+
+    # Clean up kickstarts
+    sudo rm -rf kickstarts/ks-ostree.ks
+    sudo rm -rf kickstarts/ks-ostree-container.ks
+
+    # Clean up composes
+    for i in $(sudo composer-cli compose list | grep -v ID | awk '{print $1}'); do sudo composer-cli compose delete $i; done
+    # Clean up blueprints
+    sudo composer-cli blueprints delete test-ostree
+}
+
 case $1 in
     init)
         init
         ;;
     1)
         experiment_1
+        ;;
+    6)
+        experiment_6
+        ;;
+    create_ostree_container)
+        create_ostree_container
+        ;;
+    cleanup)
+        cleanup
         ;;
     *)
         usage

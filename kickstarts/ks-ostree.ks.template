@@ -15,9 +15,10 @@ clearpart --all --initlabel
 autopart --type=lvm
 reboot --eject
 
+user --name=redhat --groups=wheel --iscrypted --password=$6$N4kegLwy8hiNEYx9$Ch5nvt0BU4gNLlxwCXZwdsPgrrZn334POWfWssxfzqmLXljK7JN00E497r42VI3ALMKvJl7SxTR..JhgTcrzM.
 rootpw redhat
 
 # Configure ostree
 #ostreesetup --nogpg --osname=rhel --remote=edge --url=http://192.168.122.1:8080/repo --ref=rhel/9/ARCH/edge
-#ostreecontainer
- 
+#ostreecontainer --url=quay.io/QUAY_USER/rhel9.2-base:latest --no-signature-verification
+
