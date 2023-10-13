@@ -81,16 +81,23 @@ function experiment_1() {
     # Create a new VM that pulls the ostree hosted in the container
     sudo virt-install --name test-ostree-base-vm \
     --memory 2048 \
-    --disk size=10 \
-    --os-variant rhel9 \
-    --import \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree.ks \
     --network network=default \
-    --graphics none \
-    --initrd-inject kickstarts/ks-ostree.ks \
-    --boot kernel=/var/lib/libvirt/boot/rhel9/vmlinuz,initrd=/var/lib/libvirt/boot/rhel9/initrd.img,kernel_args="console=ttyS0 ostree=/ostree/repo rhgb quiet" \
-    --qemu-commandline="-fw_cfg name=opt/com.coreos/config,file=/ostree/repo/config.ign"
+    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
 
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
 
+    # if artifacts/traffic.txt exists, remove it
+    if [ -f "artifacts/traffic.csv" ]; then
+        rm artifacts/traffic.csv
+    fi
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
 
     exit 0
 }

@@ -10,5 +10,5 @@ distro = ""
 [[customizations.user]]
 name = "redhat"
 description = "redhat user"
-password = "$6$oUF8dYqqkTRYEl4n$FsCvivruxcgg.bF2kyt4dC/OmGNTQLOORV0.0PvShodRtF.KffrdPv2Y.t2Rmr25TpwSalTnVK.Cqx38yNLuU1"
+password = "$6$N4kegLwy8hiNEYx9$Ch5nvt0BU4gNLlxwCXZwdsPgrrZn334POWfWssxfzqmLXljK7JN00E497r42VI3ALMKvJl7SxTR..JhgTcrzM."
 groups = ["users", "wheel"]
