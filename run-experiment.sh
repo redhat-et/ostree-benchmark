@@ -14,6 +14,32 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
+function generate_random_binary() {
+    echo "🕛 Generating a random binary"
+    if [ ! -d "artifacts" ]; then
+        mkdir artifacts
+    fi
+    if [ ! -f "artifacts/random_binary" ]; then
+        dd if=/dev/urandom of=artifacts/application.bin bs=1M count=100
+    fi
+}
+
+function update_incremental_random_binary() {
+    echo "🕛 Updating the random binary"
+    if [ ! -d "artifacts" ]; then
+        mkdir artifacts
+    fi
+    if [ ! -f "artifacts/application.bin" ]; then
+        echo "🕛 The random binary does not exist. Generating it now"
+        generate_random_binary
+    fi
+    if [ ! -f "artifacts/application.bin.updated" ]; then
+        cp artifacts/application.bin artifacts/application.bin.updated
+        dd if=/dev/urandom of=artifacts/application.bin.updated bs=1M count=20 seek=80 conv=notrunc
+    fi
+    #mv artifacts/application.bin.updated artifacts/application.bin
+
+}
 
 function create_base_ostree() {
     echo "🕛 Importing the base blueprint and building a new ostree"
@@ -79,7 +105,7 @@ function create_ostree_upgrade() {
         OSTREE_COMPOSE_ID=$(sudo composer-cli compose status | grep test-ostree | grep 0.0.2 | awk '{print $1}')
     else
         echo "🕛 The compose has not been created yet. Creating it now"
-        OSTREE_COMPOSE_ID=$(sudo composer-cli compose start-ostree test-ostree --parent "rhel/9/$(uname -i)/edge" --url http://localhost:8080/repo/ --ref "rhel/9-devel/$(uname -i)/edge" edge-container | grep -oP '(?<=Compose ).*(?= added to the queue)')
+        OSTREE_COMPOSE_ID=$(sudo composer-cli compose start-ostree test-ostree --parent "rhel/9/$(uname -i)/edge" --url http://localhost:8080/repo/ --ref "rhel/9/$(uname -i)/edge" edge-container | grep -oP '(?<=Compose ).*(?= added to the queue)')
 
         while true; do
         COMPOSE_STATUS=$(sudo composer-cli compose status | grep $OSTREE_COMPOSE_ID | awk '{print $2}')
@@ -139,8 +165,6 @@ function create_ostree_native_container_upgrade() {
     # Replace QUAY_USER with the user of quay.io in Containerfile.template to Containerfile
     cp blueprints/Containerfile.template blueprints/Containerfile
     sed -e "s/QUAY_USER/$QUAY_USER/g" -i blueprints/Containerfile
-
-    #TODO: Add python -m http.server & to where we store the libreswan rpm
 
     echo "🕛 Creating a new ostree native container upgrade"
     sudo podman build -t quay.io/$QUAY_USER/rhel9.2-base:latest -f blueprints/Containerfile
@@ -343,6 +367,12 @@ case $1 in
         ;;
     6)
         experiment_6
+        ;;
+    generate-random-binary)
+        generate_random_binary
+        ;;
+    update-incremental-random-binary)
+        update_incremental_random_binary
         ;;
     create-base-ostree)
         create_base_ostree
