@@ -1,0 +1,7 @@
+check_gpg = false
+check_repogpg = false
+check_ssl = false
+id = "local_repo"
+name = "local_repo"
+system = false
+type = "yum-baseurl"

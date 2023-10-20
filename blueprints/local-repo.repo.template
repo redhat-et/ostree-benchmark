@@ -1,0 +1,4 @@
+[local-repo]
+name = Local Repo
+enabled = 1
+gpgcheck = 0

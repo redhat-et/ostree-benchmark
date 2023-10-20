@@ -1,13 +1,13 @@
 name = "test-ostree"
 description = "test-ostree"
-version = "0.0.1"
+version = "0.0.2"
 modules = []
 groups = []
 distro = ""
 
 [[packages]]
 name = "libreswan"
-version = "*"
+version = "4.12-1.el9"
 
 [customizations]
 

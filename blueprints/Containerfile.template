@@ -1,0 +1,5 @@
+FROM quay.io/QUAY_USER/rhel9.2-base:latest
+
+COPY local-repo.repo /etc/yum.repos.d/
+RUN rpm-ostree install libreswan-4.12-1.el9.x86_64 && \
+    ostree container commit

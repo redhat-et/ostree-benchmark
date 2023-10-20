@@ -57,6 +57,10 @@ def plot_csv(csv_path):
     plot_path = f'{csv_path}_{timestamp}.png'
     plt.savefig(plot_path)
 
+    # Rename CSV file with timestamp
+    new_csv_path = csv_path.split('.csv')[0]
+    os.rename(csv_path, f'{new_csv_path}_{timestamp}.csv')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Monitor network interface')
