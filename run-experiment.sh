@@ -4,6 +4,7 @@ set -x
 QUAY_USER="oglok"
 REF="rhel/9/$(uname -i)/edge"
 UPD_REF="rhel/9/$(uname -i)/edge"
+IMAGE="rhel9.2-base:latest"
 
 function usage() {
     echo "Usage: $0 <experiment_number>"
@@ -79,7 +80,7 @@ function create_base_ostree() {
 
 function expose_ostree() {
     if [ ! -f "artifacts/test-ostree-base-container.tar" ]; then
-        echo "🕛 The ostree container does not exist. Please run the create_base_ostree function first"
+        echo "🕛 The ostree container does not exist. Please run the create-base-ostree function first"
         exit 1
     fi
     OSTREE_CONTAINER_ID=$(sudo podman load -i artifacts/test-ostree-base-container.tar | grep sha256 | awk '{print $3}' | cut -d: -f2)
@@ -88,6 +89,7 @@ function expose_ostree() {
     if [ $? -eq 1 ]; then
         sudo podman rm -f test-ostree-base-container-upgrade
         sudo podman run --rm -d --name=test-ostree-base-container -p 8080:8080 localhost/test-ostree-base-container:latest
+        sleep 5
     fi
 
     # Save commit id for future builds
@@ -130,6 +132,41 @@ function create_ostree_upgrade() {
 
 }
 
+function create_ostree_upgrade_no_parent() {
+    echo "🕛 Importing the upgrade blueprint and building a new ostree without parent commit id"
+    sudo composer-cli blueprints delete test-ostree
+    sudo composer-cli blueprints push blueprints/test-ostree-base-upgrade.toml
+    sudo composer-cli blueprints depsolve test-ostree
+
+    COMPOSE_STATUS=$(sudo composer-cli compose status | grep test-ostree | grep 0.0.2 | awk '{print $2}')
+
+    if [[ "$COMPOSE_STATUS" == "FINISHED" || "$COMPOSE_STATUS" == "RUNNING" ]]; then
+        echo "🕛 The compose has already been initiated and its status is $COMPOSE_STATUS. Skipping the compose creation"
+        OSTREE_COMPOSE_ID=$(sudo composer-cli compose status | grep test-ostree | grep 0.0.2 | awk '{print $1}')
+    else
+        echo "🕛 The compose has not been created yet. Creating it now"
+        OSTREE_COMPOSE_ID=$(sudo composer-cli compose start-ostree test-ostree --ref $UPD_REF edge-container | grep -oP '(?<=Compose ).*(?= added to the queue)')
+
+        while true; do
+        COMPOSE_STATUS=$(sudo composer-cli compose status | grep $OSTREE_COMPOSE_ID | awk '{print $2}')
+        if [ "$COMPOSE_STATUS" == "FAILED" ]; then
+            echo "🕛 The compose failed"
+            exit 1
+        elif [ "$COMPOSE_STATUS" == "FINISHED" ]; then
+            echo "🕛 The compose finished successfully"
+            break
+        fi
+        sleep 5
+    done
+    fi
+
+    if [ ! -d "artifacts" ]; then
+        mkdir artifacts
+    fi
+    sudo composer-cli compose image $OSTREE_COMPOSE_ID --filename artifacts/test-ostree-upgrade-container.tar
+
+}
+
 function expose_ostree_upgrade() {
     if [ ! -f "artifacts/test-ostree-upgrade-container.tar" ]; then
         echo "🕛 The ostree container does not exist. Please run the create_ostree_upgrade function first"
@@ -141,6 +178,7 @@ function expose_ostree_upgrade() {
     if [ $? -eq 0 ]; then
         sudo podman rm -f test-ostree-base-container
         sudo podman run --rm -d --name=test-ostree-base-container-upgrade -p 8080:8080 localhost/test-ostree-base-container-upgrade:latest
+        sleep 5
     fi
 
     # Save commit id for future builds
@@ -170,13 +208,15 @@ function create_ostree_native_container_upgrade() {
     sed -e "s/QUAY_USER/$QUAY_USER/g" -i blueprints/Containerfile
 
     echo "🕛 Creating a new ostree native container upgrade"
-    sudo podman build -t quay.io/$QUAY_USER/rhel9.2-base:latest -f blueprints/Containerfile
+    sudo podman build -t quay.io/$QUAY_USER/$IMAGE -f blueprints/Containerfile
 
     echo "🕛 Pushing the container to quay.io"
     # Push the container to quay.io
-    sudo podman push quay.io/$QUAY_USER/rhel9.2-base:latest
+    sudo podman push quay.io/$QUAY_USER/$IMAGE
 
 }
+
+
 
 function create_rpm_repo() {
     echo "🕛 Creating a local RPM repository"
@@ -270,6 +310,7 @@ function experiment_1() {
     # Start capturing traffic
     python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_upgrade_raw.csv &
 
+    ssh-keygen -R $VM_IP
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S rpm-ostree upgrade"
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
@@ -307,7 +348,7 @@ function experiment_2() {
     VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
 
     # Start capturing traffic
-    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_rebase.csv &
 
     # wait until VM is stopped
     while true; do
@@ -327,12 +368,13 @@ function experiment_2() {
     sleep 10
     VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
     VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
-    sleep 5
+    sleep 10
     # Start capturing traffic
-    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_upgrade_raw.csv &
-
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_rebase_upgrade.csv &
+    sleep 10
+    ssh-keygen -R $VM_IP
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S rpm-ostree rebase -b $UPD_REF"
+    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "UPD_REF=rhel/10/$(uname -i)/edge && echo redhat | sudo -S rpm-ostree rebase -b \$UPD_REF"
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
     sleep 20
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
@@ -342,8 +384,69 @@ function experiment_2() {
 
 }
 
-function experiment_6() {
-    echo "🕛 Running experiment 6: Deploying a OSTree Native Container"
+function experiment_3() {
+    echo "🕛 Running experiment 3: Deploying a remote OSTree and rebase without parent commit id"
+    create_base_ostree
+    expose_ostree
+
+    if [ ! -f "kickstarts/ks-ostree.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree.ks
+        sed -e "s/#ostreesetup/ostreesetup/g" -i kickstarts/ks-ostree.ks
+        sed -e "s/ARCH/$(uname -i)/g" -i kickstarts/ks-ostree.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-base-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_rebase.csv &
+
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-base-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    create_rpm_repo
+    UPD_REF="rhel/10/$(uname -i)/edge" create_ostree_upgrade_no_parent
+    expose_ostree_upgrade
+
+    sudo virsh start --domain test-ostree-base-vm
+    sleep 10
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+    VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
+    sleep 10
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_rebase_upgrade.csv &
+    sleep 10
+    ssh-keygen -R $VM_IP
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "UPD_REF=rhel/10/$(uname -i)/edge && echo redhat | sudo -S rpm-ostree rebase -b \$UPD_REF"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
+    sleep 20
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sudo virsh destroy --domain test-ostree-base-vm
+    exit 0
+}
+
+function experiment_4() {
+    echo "🕛 Running experiment 6: Deploying a OSTree Native Container and upgrade"
     expose_ostree
 
     #Ask if you want to create the ostree container
@@ -376,6 +479,18 @@ function experiment_6() {
     # Start capturing traffic
     python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container.csv &
 
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-container-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    create_rpm_repo
+    create_ostree_native_container_upgrade
 
     # Start VM
     sudo virsh start --domain test-ostree-container-vm
@@ -385,6 +500,8 @@ function experiment_6() {
     sleep 5
     # Start capturing traffic
     python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container_upgrade.csv &
+
+    ssh-keygen -R $VM_IP
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S rpm-ostree upgrade"
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
@@ -393,6 +510,86 @@ function experiment_6() {
     sudo virsh destroy --domain test-ostree-container-vm
     exit 0
 }
+
+function experiment_5() {
+    echo "🕛 Running experiment 4: Deploying a OSTree Native Container and rebase"
+    expose_ostree
+
+    #Ask if you want to create the ostree container
+    read -p "Do you want to create the ostree native container? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        create_ostree_native_container
+    fi
+
+    if [ ! -f "kickstarts/ks-ostree-container.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree-container.ks
+        sed -e "s/#ostreecontainer/ostreecontainer/g" -i kickstarts/ks-ostree-container.ks
+        sed -e "s/QUAY_USER/$QUAY_USER/g" -i kickstarts/ks-ostree-container.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-container-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-container-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree-container.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree-container.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-container-vm | grep default | awk '{print $1}')
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container.csv &
+
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-container-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    create_rpm_repo
+    IMAGE=rhel9.2-upgrade:latest create_ostree_native_container_upgrade
+
+    # Start VM
+    sudo virsh start --domain test-ostree-container-vm
+    sleep 10
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-container-vm | grep default | awk '{print $1}')
+    VM_IP=$(sudo virsh domifaddr test-ostree-container-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
+    sleep 5
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container_upgrade.csv &
+
+    ssh-keygen -R $VM_IP
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "IMAGE=rhel9.2-upgrade:latest && QUAY_USER=${QUAY_USER} && echo redhat | sudo -S rpm-ostree rebase ostree-unverified-registry:quay.io/\$QUAY_USER/\$IMAGE"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
+    sleep 20
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S poweroff"
+    sudo virsh destroy --domain test-ostree-container-vm
+    exit 0
+
+}
+
+function experiment_6() {
+    echo "🕛 Running experiment 5: Build two base layers and a binary on top. Upgrade from one to the other."
+    expose_ostree
+
+    #Ask if you want to create the ostree container
+    read -p "Do you want to create the ostree native container? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        create_ostree_native_container
+    fi
+}
+
 
 function cleanup() {
     # Clean up all VMs
@@ -436,8 +633,14 @@ case $1 in
     2)
         experiment_2
         ;;
+    3)
+        experiment_3
+        ;;
+    4)
+        experiment_4
+        ;;
     6)
-        experiment_6
+        experiment_5
         ;;
     generate-random-binary)
         generate_random_binary
@@ -453,6 +656,9 @@ case $1 in
         ;;
     create-ostree-upgrade)
         create_ostree_upgrade
+        ;;
+    create-ostree-upgrade-no-parent)
+        create_ostree_upgrade_no_parent
         ;;
     expose-ostree-upgrade)
         expose_ostree_upgrade
