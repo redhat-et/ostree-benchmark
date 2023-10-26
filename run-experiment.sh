@@ -216,8 +216,6 @@ function create_ostree_native_container_upgrade() {
 
 }
 
-
-
 function create_rpm_repo() {
     echo "🕛 Creating a local RPM repository"
     if [ ! -d "artifacts" ]; then
@@ -446,7 +444,7 @@ function experiment_3() {
 }
 
 function experiment_4() {
-    echo "🕛 Running experiment 6: Deploying a OSTree Native Container and upgrade"
+    echo "🕛 Running experiment 4: Deploying a OSTree Native Container and upgrade"
     expose_ostree
 
     #Ask if you want to create the ostree container
@@ -461,6 +459,7 @@ function experiment_4() {
         cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree-container.ks
         sed -e "s/#ostreecontainer/ostreecontainer/g" -i kickstarts/ks-ostree-container.ks
         sed -e "s/QUAY_USER/$QUAY_USER/g" -i kickstarts/ks-ostree-container.ks
+        sed -e "s/IMAGE/$IMAGE/g" -i kickstarts/ks-ostree-container.ks
     fi
 
     # Create a new VM that pulls the ostree hosted in the container
@@ -512,7 +511,7 @@ function experiment_4() {
 }
 
 function experiment_5() {
-    echo "🕛 Running experiment 4: Deploying a OSTree Native Container and rebase"
+    echo "🕛 Running experiment 5: Deploying a OSTree Native Container and rebase"
     expose_ostree
 
     #Ask if you want to create the ostree container
@@ -527,6 +526,7 @@ function experiment_5() {
         cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree-container.ks
         sed -e "s/#ostreecontainer/ostreecontainer/g" -i kickstarts/ks-ostree-container.ks
         sed -e "s/QUAY_USER/$QUAY_USER/g" -i kickstarts/ks-ostree-container.ks
+        sed -e "s/IMAGE/$IMAGE/g" -i kickstarts/ks-ostree-container.ks
     fi
 
     # Create a new VM that pulls the ostree hosted in the container
@@ -579,15 +579,106 @@ function experiment_5() {
 }
 
 function experiment_6() {
-    echo "🕛 Running experiment 5: Build two base layers and a binary on top. Upgrade from one to the other."
+    echo "🕛 Running experiment 6: Build two base layers and a binary on top. Upgrade from one to the other."
     expose_ostree
 
-    #Ask if you want to create the ostree container
-    read -p "Do you want to create the ostree native container? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        create_ostree_native_container
+    OSTREE_CONTAINER_PATH=$(sudo podman inspect test-ostree-base-container | grep -i "overlay" | grep merged | awk '{print $2}' | cut -d\" -f2)
+    if [ -z "$OSTREE_CONTAINER_PATH" ]; then
+        echo "🕛 The ostree container is not running. Please run the expose_ostree function first"
+        exit 1
     fi
+    sudo rpm-ostree compose container-encapsulate --repo="$OSTREE_CONTAINER_PATH/usr/share/nginx/html/repo/" rhel/9/x86_64/edge docker://quay.io/$QUAY_USER/rhel9.2-base:0.0.0
+
+    create_rpm_repo
+    create_ostree_upgrade_no_parent
+    expose_ostree_upgrade
+
+    OSTREE_CONTAINER_PATH=$(sudo podman inspect test-ostree-base-container-upgrade | grep -i "overlay" | grep merged | awk '{print $2}' | cut -d\" -f2)
+    if [ -z "$OSTREE_CONTAINER_PATH" ]; then
+        echo "🕛 The ostree container is not running. Please run the expose_ostree function first"
+        exit 1
+    fi
+    sudo rpm-ostree compose container-encapsulate --repo="$OSTREE_CONTAINER_PATH/usr/share/nginx/html/repo/" rhel/9/x86_64/edge docker://quay.io/$QUAY_USER/rhel9.2-base:0.0.1
+
+    echo "🕛 Login into quay.io"
+    sudo podman login quay.io
+
+    generate_random_binary
+    cp artifacts/application.bin blueprints/
+    # Replace QUAY_USER with the user of quay.io in Containerfile.template to Containerfile1
+    cp blueprints/Containerfile.template.binary blueprints/Containerfile1
+    sed -e "s/QUAY_USER/$QUAY_USER/g" -i blueprints/Containerfile1
+    sed -e "s/VERSION/0.0.0/g" -i blueprints/Containerfile1
+
+    echo "🕛 Creating a new ostree native container upgrade"
+    sudo podman build -t quay.io/$QUAY_USER/myapplication:stable -f blueprints/Containerfile1
+
+    echo "🕛 Pushing the container to quay.io"
+    # Push the container to quay.io
+    sudo podman push quay.io/$QUAY_USER/myapplication:stable
+
+    if [ ! -f "kickstarts/ks-ostree-container.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree-container.ks
+        sed -e "s/#ostreecontainer/ostreecontainer/g" -i kickstarts/ks-ostree-container.ks
+        sed -e "s/QUAY_USER/$QUAY_USER/g" -i kickstarts/ks-ostree-container.ks
+        IMAGE=myapplication:stable && sed -e "s/IMAGE/$IMAGE/g" -i kickstarts/ks-ostree-container.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-container-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-container-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree-container.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree-container.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-container-vm | grep default | awk '{print $1}')
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container.csv &
+
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-container-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    # Replace QUAY_USER with the user of quay.io in Containerfile.template to Containerfile2
+    cp blueprints/Containerfile.template.binary blueprints/Containerfile2
+    sed -e "s/QUAY_USER/$QUAY_USER/g" -i blueprints/Containerfile2
+    sed -e "s/VERSION/0.0.1/g" -i blueprints/Containerfile2
+
+    sudo podman build -t quay.io/$QUAY_USER/myapplication:stable -f blueprints/Containerfile2
+
+    echo "🕛 Pushing the container to quay.io"
+    # Push the container to quay.io
+    sudo podman push quay.io/$QUAY_USER/myapplication:stable
+
+    # Start VM
+    sudo virsh start --domain test-ostree-container-vm
+    sleep 10
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-container-vm | grep default | awk '{print $1}')
+    VM_IP=$(sudo virsh domifaddr test-ostree-container-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
+    sleep 5
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container_upgrade.csv &
+
+    ssh-keygen -R $VM_IP
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S rpm-ostree upgrade"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
+    sleep 20
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S poweroff"
+    sudo virsh destroy --domain test-ostree-container-vm
+    rm blueprints/application.bin
 }
 
 
@@ -610,6 +701,8 @@ function cleanup() {
 
     # Clean up blueprints
     sudo rm -rf blueprints/Containerfile
+    sudo rm -rf blueprints/Containerfile1
+    sudo rm -rf blueprints/Containerfile2
     sudo rm -rf blueprints/local-repo-source.toml
     sudo rm -rf blueprints/local-repo.repo
 
@@ -639,8 +732,11 @@ case $1 in
     4)
         experiment_4
         ;;
-    6)
+    5)
         experiment_5
+        ;;
+    6)
+        experiment_6
         ;;
     generate-random-binary)
         generate_random_binary

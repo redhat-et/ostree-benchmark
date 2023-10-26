@@ -20,5 +20,5 @@ rootpw redhat
 
 # Configure ostree
 #ostreesetup --nogpg --osname=rhel --remote=edge --url=http://192.168.122.1:8080/repo --ref=rhel/9/ARCH/edge
-#ostreecontainer --url=quay.io/QUAY_USER/rhel9.2-base:latest --no-signature-verification
+#ostreecontainer --url=quay.io/QUAY_USER/IMAGE --no-signature-verification
 
