@@ -1,0 +1,22 @@
+name = "test-ostree"
+description = "test-ostree"
+version = "0.0.1"
+modules = []
+groups = []
+distro = ""
+
+[[packages]]
+name = "libreswan"
+version = "4.9-1.el9"
+
+[[packages]]
+name = "myapplication"
+version = "*"
+
+[customizations]
+
+[[customizations.user]]
+name = "redhat"
+description = "redhat user"
+password = "$6$N4kegLwy8hiNEYx9$Ch5nvt0BU4gNLlxwCXZwdsPgrrZn334POWfWssxfzqmLXljK7JN00E497r42VI3ALMKvJl7SxTR..JhgTcrzM."
+groups = ["users", "wheel"]

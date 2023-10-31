@@ -44,6 +44,22 @@ function update_incremental_random_binary() {
 
 }
 
+function generate_rpm_binary() {
+    echo "🕛 Generating a random binary"
+    if [ ! -d "artifacts" ]; then
+        mkdir artifacts
+    fi
+    if [ ! -f "artifacts/application.bin" ]; then
+       generate_random_binary
+    fi
+    pushd artifacts/
+    tar cvf application.tar application.bin
+    popd
+    rpmbuild -ba rpm/myapplication.spec --define "_sourcedir $PWD/artifacts" --define "_topdir $PWD/rpmbuild"
+    cp rpmbuild/RPMS/x86_64/myapplication-1.0-1.el9.x86_64.rpm artifacts/
+
+}
+
 function create_base_ostree() {
     echo "🕛 Importing the base blueprint and building a new ostree"
     sudo composer-cli blueprints delete test-ostree
@@ -185,6 +201,75 @@ function expose_ostree_upgrade() {
     curl http://localhost:8080/repo/refs/heads/rhel/9/x86_64/edge > artifacts/commit_id_upgrade
 }
 
+function create_base_ostree_binary() {
+    echo "🕛 Importing the base blueprint and building a new ostree with binary"
+    sudo composer-cli blueprints delete test-ostree
+    sudo composer-cli blueprints push blueprints/test-ostree-base-binary.toml
+    sudo composer-cli blueprints depsolve test-ostree
+
+    COMPOSE_STATUS=$(sudo composer-cli compose status | grep test-ostree | awk '{print $2}')
+
+    if [[ "$COMPOSE_STATUS" == "FINISHED" || "$COMPOSE_STATUS" == "RUNNING" ]]; then
+        echo "🕛 The compose has already been initiated and its status is $COMPOSE_STATUS. Skipping the compose creation"
+        OSTREE_COMPOSE_ID=$(sudo composer-cli compose status | grep test-ostree | awk '{print $1}')
+    else
+        echo "🕛 The compose has not been created yet. Creating it now"
+        OSTREE_COMPOSE_ID=$(sudo composer-cli compose start-ostree test-ostree --ref $REF  edge-container | grep -oP '(?<=Compose ).*(?= added to the queue)')
+
+        while true; do
+        COMPOSE_STATUS=$(sudo composer-cli compose status | grep $OSTREE_COMPOSE_ID | awk '{print $2}')
+        if [ "$COMPOSE_STATUS" == "FAILED" ]; then
+            echo "🕛 The compose failed"
+            exit 1
+        elif [ "$COMPOSE_STATUS" == "FINISHED" ]; then
+            echo "🕛 The compose finished successfully"
+            break
+        fi
+        sleep 5
+    done
+    fi
+
+    if [ ! -d "artifacts" ]; then
+        mkdir artifacts
+    fi
+    sudo composer-cli compose image $OSTREE_COMPOSE_ID --filename artifacts/test-ostree-base-container.tar
+}
+
+
+function create_ostree_upgrade_binary() {
+    echo "🕛 Importing the upgrade blueprint and building a new ostree"
+    sudo composer-cli blueprints delete test-ostree
+    sudo composer-cli blueprints push blueprints/test-ostree-base-binary-upgrade.toml
+    sudo composer-cli blueprints depsolve test-ostree
+
+    COMPOSE_STATUS=$(sudo composer-cli compose status | grep test-ostree | grep 0.0.2 | awk '{print $2}')
+
+    if [[ "$COMPOSE_STATUS" == "FINISHED" || "$COMPOSE_STATUS" == "RUNNING" ]]; then
+        echo "🕛 The compose has already been initiated and its status is $COMPOSE_STATUS. Skipping the compose creation"
+        OSTREE_COMPOSE_ID=$(sudo composer-cli compose status | grep test-ostree | grep 0.0.2 | awk '{print $1}')
+    else
+        echo "🕛 The compose has not been created yet. Creating it now"
+        OSTREE_COMPOSE_ID=$(sudo composer-cli compose start-ostree test-ostree --parent $REF --url http://localhost:8080/repo/ --ref $UPD_REF edge-container | grep -oP '(?<=Compose ).*(?= added to the queue)')
+
+        while true; do
+        COMPOSE_STATUS=$(sudo composer-cli compose status | grep $OSTREE_COMPOSE_ID | awk '{print $2}')
+        if [ "$COMPOSE_STATUS" == "FAILED" ]; then
+            echo "🕛 The compose failed"
+            exit 1
+        elif [ "$COMPOSE_STATUS" == "FINISHED" ]; then
+            echo "🕛 The compose finished successfully"
+            break
+        fi
+        sleep 5
+    done
+    fi
+
+    if [ ! -d "artifacts" ]; then
+        mkdir artifacts
+    fi
+    sudo composer-cli compose image $OSTREE_COMPOSE_ID --filename artifacts/test-ostree-upgrade-container.tar
+
+}
 
 function create_ostree_native_container() {
     echo "🕛 Login into quay.io"
@@ -251,7 +336,7 @@ function create_rpm_repo() {
 
 function init() {
     echo "🕛 Installing dependencies..."
-    sudo dnf install -y composer-cli osbuild-composer cockpit-composer sshpass podman python
+    sudo dnf install -y composer-cli osbuild-composer cockpit-composer sshpass podman python rpm-build
     sudo dnf group install -y "Virtualization Host"
     curl -LO https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/Server/x86_64/iso/Fedora-Server-netinst-x86_64-Rawhide-20231018.n.0.iso
     sudo mv Fedora-Server-netinst-x86_64-Rawhide-20231018.n.0.iso /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso
@@ -681,6 +766,68 @@ function experiment_6() {
     rm blueprints/application.bin
 }
 
+function experiment_7() {
+    echo "🕛 Running experiment 7: Deploying a remote OSTree with application binary and upgrade"
+    generate_rpm_binary
+    create_rpm_repo
+
+    create_base_ostree_binary
+    expose_ostree
+
+    if [ ! -f "kickstarts/ks-ostree.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree.ks
+        sed -e "s/#ostreesetup/ostreesetup/g" -i kickstarts/ks-ostree.ks
+        sed -e "s/ARCH/$(uname -i)/g" -i kickstarts/ks-ostree.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-base-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
+
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-base-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    create_ostree_upgrade_binary
+    expose_ostree_upgrade
+
+    sudo virsh start --domain test-ostree-base-vm
+    sleep 10
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+    VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
+    sleep 5
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_upgrade_raw.csv &
+
+    ssh-keygen -R $VM_IP
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S rpm-ostree upgrade"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
+    sleep 20
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sudo virsh destroy --domain test-ostree-base-vm
+    exit 0
+}
+
 
 function cleanup() {
     # Clean up all VMs
@@ -714,6 +861,9 @@ function cleanup() {
     # Clean up blueprints
     sudo composer-cli blueprints delete test-ostree
     sudo composer-cli sources delete local_repo
+
+    # Clean up rpmbuild
+    rm -rf rpmbuild
 }
 
 case $1 in
@@ -737,6 +887,9 @@ case $1 in
         ;;
     6)
         experiment_6
+        ;;
+    7)
+        experiment_7
         ;;
     generate-random-binary)
         generate_random_binary
@@ -767,6 +920,9 @@ case $1 in
         ;;
     create-rpm-repo)
         create_rpm_repo
+        ;;
+    generate-rpm-binary)
+        generate_rpm_binary
         ;;
     cleanup)
         cleanup

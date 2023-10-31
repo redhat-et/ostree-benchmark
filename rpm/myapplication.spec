@@ -17,8 +17,8 @@ My application binary
 cp %{SOURCE0} ./
 
 %install
-mkdir -p %{buildroot}/usr/local/bin
-cp application.bin %{buildroot}/usr/local/bin
+mkdir -p %{buildroot}/usr/bin
+cp application.bin %{buildroot}/usr/bin
 
 %files
-/usr/local/bin/application.bin
+/usr/bin/application.bin
