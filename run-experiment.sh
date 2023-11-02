@@ -991,6 +991,94 @@ function experiment_9() {
     exit 0
 }
 
+###########################################################################################
+# The following experiments will use container images already built and hosted in quay.io #
+###########################################################################################
+
+function experiment_10() {
+    echo "🕛 Running experiment 10: Rebase using OSTree native containers with application.bin"
+    echo "🕛 Login into quay.io"
+    sudo podman login quay.io
+
+    generate_random_binary
+    cp artifacts/application.bin blueprints/
+    # Replace QUAY_USER with the user of quay.io in Containerfile.template to Containerfile1
+    cp blueprints/Containerfile.template.binary blueprints/Containerfile1
+    sed -e "s/QUAY_USER/$QUAY_USER/g" -i blueprints/Containerfile1
+    sed -e "s/VERSION/0.0.0/g" -i blueprints/Containerfile1
+
+    echo "🕛 Creating a new ostree native container upgrade"
+    sudo podman build -t quay.io/$QUAY_USER/myapplication:stable -f blueprints/Containerfile1
+
+    echo "🕛 Pushing the container to quay.io"
+    # Push the container to quay.io
+    sudo podman push quay.io/$QUAY_USER/myapplication:stable
+
+    if [ ! -f "kickstarts/ks-ostree-container.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree-container.ks
+        sed -e "s/#ostreecontainer/ostreecontainer/g" -i kickstarts/ks-ostree-container.ks
+        sed -e "s/QUAY_USER/$QUAY_USER/g" -i kickstarts/ks-ostree-container.ks
+        IMAGE=myapplication:stable && sed -e "s/IMAGE/$IMAGE/g" -i kickstarts/ks-ostree-container.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-container-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-container-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree-container.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree-container.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-container-vm | grep default | awk '{print $1}')
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container.csv &
+
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-container-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    # Replace QUAY_USER with the user of quay.io in Containerfile.template to Containerfile2
+    cp blueprints/Containerfile.template.binary blueprints/Containerfile2
+    sed -e "s/QUAY_USER/$QUAY_USER/g" -i blueprints/Containerfile2
+    sed -e "s/VERSION/0.0.1/g" -i blueprints/Containerfile2
+
+    sudo podman build -t quay.io/$QUAY_USER/myapplication:latest -f blueprints/Containerfile2
+
+    echo "🕛 Pushing the container to quay.io"
+    # Push the container to quay.io
+    sudo podman push quay.io/$QUAY_USER/myapplication:latest
+
+    # Start VM
+    sudo virsh start --domain test-ostree-container-vm
+    sleep 10
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-container-vm | grep default | awk '{print $1}')
+    VM_IP=$(sudo virsh domifaddr test-ostree-container-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
+    sleep 5
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_container_upgrade.csv &
+
+    ssh-keygen -R $VM_IP
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "IMAGE=myapplication:latest && QUAY_USER=${QUAY_USER} && echo redhat | sudo -S rpm-ostree rebase ostree-unverified-registry:quay.io/\$QUAY_USER/\$IMAGE"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
+    sleep 20
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S poweroff"
+    #sudo virsh destroy --domain test-ostree-container-vm
+    rm blueprints/application.bin
+
+}
+
 function cleanup() {
     # Clean up all VMs
     sudo virsh destroy test-ostree-base-vm
@@ -1058,6 +1146,9 @@ case $1 in
         ;;
     9)
         experiment_9
+        ;;
+    10)
+        experiment_10
         ;;
     generate-random-binary)
         generate_random_binary

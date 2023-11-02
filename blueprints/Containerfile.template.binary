@@ -1,3 +1,4 @@
 FROM quay.io/QUAY_USER/rhel9.2-base:VERSION
 
-COPY ./application.bin /usr/local/bin/
+COPY ./application.bin /usr/bin/
+RUN ostree container commit
