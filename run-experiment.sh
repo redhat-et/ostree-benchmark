@@ -378,7 +378,7 @@ function init() {
 }
 
 function experiment_1() {
-    echo "🕛 Running experiment 1: Deploying a remote OSTree and upgrade"
+    echo "🕛 Running experiment 1: Deploying a remote OSTree and upgrade single RPM"
     create_base_ostree
     expose_ostree
 
@@ -439,7 +439,7 @@ function experiment_1() {
 }
 
 function experiment_2() {
-    echo "🕛 Running experiment 2: Deploying a remote OSTree and rebase"
+    echo "🕛 Running experiment 2: Deploying a remote OSTree and rebase single RPM"
     create_base_ostree
     expose_ostree
 
@@ -503,7 +503,7 @@ function experiment_2() {
 }
 
 function experiment_3() {
-    echo "🕛 Running experiment 3: Deploying a remote OSTree and rebase without parent commit id"
+    echo "🕛 Running experiment 3: Deploying a remote OSTree and rebase single RPM without parent commit id"
     create_base_ostree
     expose_ostree
 
@@ -564,7 +564,197 @@ function experiment_3() {
 }
 
 function experiment_4() {
-    echo "🕛 Running experiment 4: Deploying a OSTree Native Container and upgrade"
+    echo "🕛 Running experiment 4: Deploying a remote OSTree with application binary and upgrade base"
+    generate_rpm_binary
+    create_rpm_repo
+
+    create_base_ostree_binary
+    expose_ostree
+
+    if [ ! -f "kickstarts/ks-ostree.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree.ks
+        sed -e "s/#ostreesetup/ostreesetup/g" -i kickstarts/ks-ostree.ks
+        sed -e "s/ARCH/$(uname -i)/g" -i kickstarts/ks-ostree.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-base-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
+
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-base-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    create_ostree_upgrade_binary
+    expose_ostree_upgrade
+
+    sudo virsh start --domain test-ostree-base-vm
+    sleep 10
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+    VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
+    sleep 5
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_upgrade_raw.csv &
+
+    sleep 10
+    ssh-keygen -R $VM_IP
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "UPD_REF=rhel/10/$(uname -i)/edge && echo redhat | sudo -S rpm-ostree rebase -b \$UPD_REF"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
+    sleep 20
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sudo virsh destroy --domain test-ostree-base-vm
+    exit 0
+}
+
+
+function experiment_5() {
+    echo "🕛 Running experiment 5: Deploying a remote OSTree with application binary and rebase base"
+    generate_rpm_binary
+    create_rpm_repo
+
+    create_base_ostree_binary
+    expose_ostree
+
+    if [ ! -f "kickstarts/ks-ostree.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree.ks
+        sed -e "s/#ostreesetup/ostreesetup/g" -i kickstarts/ks-ostree.ks
+        sed -e "s/ARCH/$(uname -i)/g" -i kickstarts/ks-ostree.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-base-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
+
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-base-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    UPD_REF="rhel/10/$(uname -i)/edge" create_ostree_upgrade_binary
+    expose_ostree_upgrade
+
+    sudo virsh start --domain test-ostree-base-vm
+    sleep 10
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+    VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
+    sleep 5
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_rebase_raw.csv &
+
+    sleep 10
+    ssh-keygen -R $VM_IP
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "UPD_REF=rhel/10/$(uname -i)/edge && echo redhat | sudo -S rpm-ostree rebase -b \$UPD_REF"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
+    sleep 20
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sudo virsh destroy --domain test-ostree-base-vm
+    exit 0
+}
+
+function experiment_6() {
+    echo "🕛 Running experiment 6: Deploying a remote OSTree with application binary and rebase base with no parent"
+    generate_rpm_binary
+    create_rpm_repo
+
+    create_base_ostree_binary
+    expose_ostree
+
+    if [ ! -f "kickstarts/ks-ostree.ks" ]; then
+        echo "🕛 The kickstart file does not exist. Creating it now"
+        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree.ks
+        sed -e "s/#ostreesetup/ostreesetup/g" -i kickstarts/ks-ostree.ks
+        sed -e "s/ARCH/$(uname -i)/g" -i kickstarts/ks-ostree.ks
+    fi
+
+    # Create a new VM that pulls the ostree hosted in the container
+    sudo virt-install --name test-ostree-base-vm \
+    --memory 2048 \
+    --os-variant rhel9.2 \
+    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
+    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
+    --initrd-inject ./kickstarts/ks-ostree.ks \
+    --network network=default \
+    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
+    --debug --noautoconsole --autostart
+
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
+
+    # wait until VM is stopped
+    while true; do
+        VM_STATUS=$(sudo virsh domstate test-ostree-base-vm)
+        if [ "$VM_STATUS" == "shut off" ]; then
+            echo "🕛 The VM is shut off"
+            break
+        fi
+        sleep 5
+    done
+
+    UPD_REF="rhel/10/$(uname -i)/edge" create_ostree_upgrade_binary_no_parent
+    expose_ostree_upgrade
+
+    sudo virsh start --domain test-ostree-base-vm
+    sleep 10
+    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
+    VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
+    sleep 5
+    # Start capturing traffic
+    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_rebase_raw.csv &
+
+    sleep 10
+    ssh-keygen -R $VM_IP
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "UPD_REF=rhel/10/$(uname -i)/edge && echo redhat | sudo -S rpm-ostree rebase -b \$UPD_REF"
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
+    sleep 20
+    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
+    sudo virsh destroy --domain test-ostree-base-vm
+    exit 0
+}
+
+function experiment_7() {
+    echo "🕛 Running experiment 7: Deploying a OSTree Native Container and upgrade single RPM"
     expose_ostree
 
     #Ask if you want to create the ostree container
@@ -630,8 +820,8 @@ function experiment_4() {
     exit 0
 }
 
-function experiment_5() {
-    echo "🕛 Running experiment 5: Deploying a OSTree Native Container and rebase"
+function experiment_8() {
+    echo "🕛 Running experiment 8: Deploying a OSTree Native Container and rebase single RPM"
     expose_ostree
 
     #Ask if you want to create the ostree container
@@ -698,8 +888,8 @@ function experiment_5() {
 
 }
 
-function experiment_6() {
-    echo "🕛 Running experiment 6: Build two base layers and a binary on top. Upgrade from one to the other."
+function experiment_9() {
+    echo "🕛 Running experiment 9: Build two base layers and a binary on top. Upgrade from one to the other."
     expose_ostree
 
     OSTREE_CONTAINER_PATH=$(sudo podman inspect test-ostree-base-container | grep -i "overlay" | grep merged | awk '{print $2}' | cut -d\" -f2)
@@ -799,196 +989,6 @@ function experiment_6() {
     sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S poweroff"
     sudo virsh destroy --domain test-ostree-container-vm
     rm blueprints/application.bin
-}
-
-function experiment_7() {
-    echo "🕛 Running experiment 7: Deploying a remote OSTree with application binary and upgrade"
-    generate_rpm_binary
-    create_rpm_repo
-
-    create_base_ostree_binary
-    expose_ostree
-
-    if [ ! -f "kickstarts/ks-ostree.ks" ]; then
-        echo "🕛 The kickstart file does not exist. Creating it now"
-        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree.ks
-        sed -e "s/#ostreesetup/ostreesetup/g" -i kickstarts/ks-ostree.ks
-        sed -e "s/ARCH/$(uname -i)/g" -i kickstarts/ks-ostree.ks
-    fi
-
-    # Create a new VM that pulls the ostree hosted in the container
-    sudo virt-install --name test-ostree-base-vm \
-    --memory 2048 \
-    --os-variant rhel9.2 \
-    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
-    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
-    --initrd-inject ./kickstarts/ks-ostree.ks \
-    --network network=default \
-    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
-    --debug --noautoconsole --autostart
-
-    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
-
-    # Start capturing traffic
-    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
-
-    # wait until VM is stopped
-    while true; do
-        VM_STATUS=$(sudo virsh domstate test-ostree-base-vm)
-        if [ "$VM_STATUS" == "shut off" ]; then
-            echo "🕛 The VM is shut off"
-            break
-        fi
-        sleep 5
-    done
-
-    create_ostree_upgrade_binary
-    expose_ostree_upgrade
-
-    sudo virsh start --domain test-ostree-base-vm
-    sleep 10
-    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
-    VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
-    sleep 5
-    # Start capturing traffic
-    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_upgrade_raw.csv &
-
-    sleep 10
-    ssh-keygen -R $VM_IP
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
-    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "UPD_REF=rhel/10/$(uname -i)/edge && echo redhat | sudo -S rpm-ostree rebase -b \$UPD_REF"
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
-    sleep 20
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
-    sudo virsh destroy --domain test-ostree-base-vm
-    exit 0
-}
-
-
-function experiment_8() {
-    echo "🕛 Running experiment 8: Deploying a remote OSTree with application binary and upgrade"
-    generate_rpm_binary
-    create_rpm_repo
-
-    create_base_ostree_binary
-    expose_ostree
-
-    if [ ! -f "kickstarts/ks-ostree.ks" ]; then
-        echo "🕛 The kickstart file does not exist. Creating it now"
-        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree.ks
-        sed -e "s/#ostreesetup/ostreesetup/g" -i kickstarts/ks-ostree.ks
-        sed -e "s/ARCH/$(uname -i)/g" -i kickstarts/ks-ostree.ks
-    fi
-
-    # Create a new VM that pulls the ostree hosted in the container
-    sudo virt-install --name test-ostree-base-vm \
-    --memory 2048 \
-    --os-variant rhel9.2 \
-    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
-    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
-    --initrd-inject ./kickstarts/ks-ostree.ks \
-    --network network=default \
-    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
-    --debug --noautoconsole --autostart
-
-    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
-
-    # Start capturing traffic
-    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
-
-    # wait until VM is stopped
-    while true; do
-        VM_STATUS=$(sudo virsh domstate test-ostree-base-vm)
-        if [ "$VM_STATUS" == "shut off" ]; then
-            echo "🕛 The VM is shut off"
-            break
-        fi
-        sleep 5
-    done
-
-    UPD_REF="rhel/10/$(uname -i)/edge" create_ostree_upgrade_binary
-    expose_ostree_upgrade
-
-    sudo virsh start --domain test-ostree-base-vm
-    sleep 10
-    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
-    VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
-    sleep 5
-    # Start capturing traffic
-    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_rebase_raw.csv &
-
-    sleep 10
-    ssh-keygen -R $VM_IP
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
-    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "UPD_REF=rhel/10/$(uname -i)/edge && echo redhat | sudo -S rpm-ostree rebase -b \$UPD_REF"
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
-    sleep 20
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
-    sudo virsh destroy --domain test-ostree-base-vm
-    exit 0
-}
-
-function experiment_9() {
-    echo "🕛 Running experiment 9: Deploying a remote OSTree with application binary and upgrade"
-    generate_rpm_binary
-    create_rpm_repo
-
-    create_base_ostree_binary
-    expose_ostree
-
-    if [ ! -f "kickstarts/ks-ostree.ks" ]; then
-        echo "🕛 The kickstart file does not exist. Creating it now"
-        cp kickstarts/ks-ostree.ks.template kickstarts/ks-ostree.ks
-        sed -e "s/#ostreesetup/ostreesetup/g" -i kickstarts/ks-ostree.ks
-        sed -e "s/ARCH/$(uname -i)/g" -i kickstarts/ks-ostree.ks
-    fi
-
-    # Create a new VM that pulls the ostree hosted in the container
-    sudo virt-install --name test-ostree-base-vm \
-    --memory 2048 \
-    --os-variant rhel9.2 \
-    --disk path=/var/lib/libvirt/images/test-ostree-base-vm.qcow2,size=10 \
-    --location /var/lib/libvirt/images/Fedora-Server-netinstall-rawhide.iso \
-    --initrd-inject ./kickstarts/ks-ostree.ks \
-    --network network=default \
-    --extra-args="inst.ks=file:/ks-ostree.ks console=ttyS0" \
-    --debug --noautoconsole --autostart
-
-    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
-
-    # Start capturing traffic
-    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic.csv &
-
-    # wait until VM is stopped
-    while true; do
-        VM_STATUS=$(sudo virsh domstate test-ostree-base-vm)
-        if [ "$VM_STATUS" == "shut off" ]; then
-            echo "🕛 The VM is shut off"
-            break
-        fi
-        sleep 5
-    done
-
-    UPD_REF="rhel/10/$(uname -i)/edge" create_ostree_upgrade_binary_no_parent
-    expose_ostree_upgrade
-
-    sudo virsh start --domain test-ostree-base-vm
-    sleep 10
-    VM_INTERFACE=$(sudo virsh domiflist test-ostree-base-vm | grep default | awk '{print $1}')
-    VM_IP=$(sudo virsh domifaddr test-ostree-base-vm | grep vnet | awk '{print $4}' | cut -d/ -f1)
-    sleep 5
-    # Start capturing traffic
-    python tools/monitor_iface.py $VM_INTERFACE artifacts/traffic_rebase_raw.csv &
-
-    sleep 10
-    ssh-keygen -R $VM_IP
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
-    sshpass -p "redhat" ssh -o "StrictHostKeyChecking=no" redhat@$VM_IP "UPD_REF=rhel/10/$(uname -i)/edge && echo redhat | sudo -S rpm-ostree rebase -b \$UPD_REF"
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S systemctl reboot"
-    sleep 20
-    sshpass -p "redhat" ssh  -o "StrictHostKeyChecking=no" redhat@$VM_IP "echo redhat | sudo -S ipsec --version"
-    sudo virsh destroy --domain test-ostree-base-vm
-    exit 0
 }
 
 ###########################################################################################
